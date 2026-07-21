@@ -1,16 +1,19 @@
 from flask import Blueprint, request, jsonify
 from controllers.user_controller import UserController
+from middlewares.auth import auth_required
 
 user_bp = Blueprint('users', __name__)
 controller = UserController()
 
 
 @user_bp.route('/users', methods=['GET'])
+@auth_required()
 def get_users():
     return jsonify(controller.get_all()), 200
 
 
 @user_bp.route('/users/<int:user_id>', methods=['GET'])
+@auth_required()
 def get_user(user_id):
     return jsonify(controller.get_by_id(user_id)), 200
 
@@ -23,6 +26,7 @@ def create_user():
 
 
 @user_bp.route('/users/<int:user_id>', methods=['PUT'])
+@auth_required()
 def update_user(user_id):
     data = request.get_json()
     result = controller.update(user_id, data)
@@ -30,12 +34,14 @@ def update_user(user_id):
 
 
 @user_bp.route('/users/<int:user_id>', methods=['DELETE'])
+@auth_required(roles=['admin'])
 def delete_user(user_id):
     result = controller.delete(user_id)
     return jsonify(result), 200
 
 
 @user_bp.route('/users/<int:user_id>/tasks', methods=['GET'])
+@auth_required()
 def get_user_tasks(user_id):
     return jsonify(controller.get_user_tasks(user_id)), 200
 

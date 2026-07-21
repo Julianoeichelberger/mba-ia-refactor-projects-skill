@@ -5,6 +5,7 @@ from models.database import db
 from models.user import User
 from models.task import Task
 from middlewares.error_handler import AppError
+from utils.jwt_service import generate_token
 from config.settings import VALID_ROLES, MIN_PASSWORD_LENGTH
 
 logger = logging.getLogger(__name__)
@@ -145,5 +146,5 @@ class UserController:
         return {
             'message': 'Login successful',
             'user': user.to_dict(),
-            'token': 'fake-jwt-token-' + str(user.id),
+            'token': generate_token(user),
         }

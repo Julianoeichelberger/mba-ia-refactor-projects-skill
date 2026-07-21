@@ -103,20 +103,24 @@ Restructure the project to follow the MVC pattern, fixing all identified anti-pa
    - `app.py` or `app.js` — Composition root / entry point
 
 2. **Execute the refactoring** applying the transformation patterns from `refactoring-playbook.md`:
-   - Extract configuration to environment-based config module
-   - Separate data access into model classes/modules
-   - Move business logic to controllers
+   - Extract configuration to environment-based config module (Pattern 1)
+   - Separate data access into model classes/modules (Pattern 4)
+   - Move business logic to controllers (Pattern 8)
    - Define routes in dedicated view/route files
-   - Centralize error handling in middleware
-   - Fix all CRITICAL and HIGH severity issues
+   - Implement **real authentication** where the audit found fake/missing auth — replace fake tokens with signed JWT, verify on every protected route, and protect mutating/data-exposing endpoints (Pattern 11)
+   - Centralize error handling in middleware (Pattern 7)
+   - **Fix EVERY CRITICAL and HIGH finding from the Phase 2 report** — this is mandatory, not best-effort
    - Fix as many MEDIUM and LOW issues as practical
 
-3. **Validate the result:**
+3. **MANDATORY: Trace findings to changes.** Phase 3 is not complete until every CRITICAL and HIGH finding from the Phase 2 report maps to a concrete code change. Build a traceability table — one row per CRITICAL/HIGH finding — and **do not mark a finding resolved unless you have verified the offending code is actually gone**, not merely relocated. Common trap: a finding whose code was *moved* during restructuring (e.g., `login()` moved from a route file into a controller) carries its vulnerability with it. Grep the refactored tree for the original signature to confirm. For the fake-JWT finding specifically, `grep -r "fake-jwt-token"` must return **zero matches** and a real verification path (decorator/middleware) must exist. If any CRITICAL/HIGH finding cannot be fully resolved, STOP and report it explicitly — never silently ship a partial fix.
+
+4. **Validate the result:**
    - Verify the application starts without errors
    - Verify all original endpoints still respond correctly
    - Confirm no anti-patterns remain in the refactored code
+   - Confirm the traceability table from step 3 shows every CRITICAL/HIGH finding as RESOLVED
 
-4. **Print the completion summary:**
+5. **Print the completion summary:**
 
 ```
 ================================
@@ -128,9 +132,16 @@ PHASE 3: REFACTORING COMPLETE
 ## Changes Made
 - <summary of key changes>
 
+## CRITICAL / HIGH Findings Resolution
+| # | Severity | Finding | Fix (file:line) | Status |
+|---|----------|---------|-----------------|--------|
+| 1 | CRITICAL | <finding> | <where/how fixed> | RESOLVED |
+| ... every CRITICAL and HIGH finding from Phase 2 — no omissions ... |
+
 ## Validation
   <check> Application boots without errors
   <check> All endpoints respond correctly
+  <check> Every CRITICAL/HIGH finding resolved (table above)
   <check> Anti-patterns resolved
 ================================
 ```
@@ -154,3 +165,5 @@ PHASE 3: REFACTORING COMPLETE
 - Use **parameterized queries** for all database operations (never string concatenation)
 - Use **environment variables** for all configuration (never hardcode secrets)
 - Use **proper password hashing** (bcrypt, argon2) — never MD5 or plaintext
+- Use **real authentication** — never fake/predictable tokens (`'fake-jwt-token-' + id`). When the audit flags fake or missing auth, Phase 3 must issue signed JWTs (PyJWT / flask-jwt-extended / jsonwebtoken), verify them on protected routes, and protect mutating/data-exposing endpoints (Pattern 11)
+- **Every CRITICAL and HIGH finding from Phase 2 must be resolved in Phase 3** — restructuring code without fixing its vulnerabilities is not a valid refactor

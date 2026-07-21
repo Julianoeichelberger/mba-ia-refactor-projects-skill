@@ -5,6 +5,11 @@ load_dotenv()
 
 SECRET_KEY = os.environ.get('SECRET_KEY', 'dev-key-change-in-production')
 DATABASE_URL = os.environ.get('DATABASE_URL', 'sqlite:///tasks.db')
+
+# Authentication (JWT)
+JWT_SECRET = os.environ.get('JWT_SECRET', SECRET_KEY)
+JWT_ALGORITHM = 'HS256'
+JWT_EXP_MINUTES = int(os.environ.get('JWT_EXP_MINUTES', 60))
 DEBUG = os.environ.get('DEBUG', 'False').lower() == 'true'
 PORT = int(os.environ.get('PORT', 5000))
 HOST = os.environ.get('HOST', '0.0.0.0')

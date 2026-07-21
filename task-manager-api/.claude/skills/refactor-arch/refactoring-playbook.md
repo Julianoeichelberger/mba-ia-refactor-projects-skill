@@ -545,6 +545,171 @@ logger.info(`Processing payment for enrollment ${enrollmentId}`);
 
 ---
 
+## Pattern 11: Replace Fake Authentication with Real JWT
+
+**Anti-pattern:** Login endpoint returns a fake/predictable token (`'fake-jwt-token-' + id`) and no route validates it — the entire API is effectively unauthenticated. This maps to catalog entry **#5 (Missing Authentication / Authorization)** and is almost always **CRITICAL**, since any client can read, modify, or delete any user's data.
+
+The fix has **three** mandatory parts. Applying only one (e.g., signing the token but never verifying it) does **not** resolve the finding:
+
+1. **Issue** a signed token on login (replace the fake string).
+2. **Verify** the token on every protected request via middleware/decorator.
+3. **Protect** the routes that mutate or expose data with that middleware/decorator.
+
+### Before (Python)
+```python
+# controllers/user_controller.py — login returns a forgeable string
+def login(self, data):
+    user = User.query.filter_by(email=data.get('email')).first()
+    if not user or not user.check_password(data.get('password')):
+        raise AppError('Invalid credentials', 401)
+    return {
+        'message': 'Login successful',
+        'user': user.to_dict(),
+        'token': 'fake-jwt-token-' + str(user.id),   # <-- forgeable, never verified
+    }
+
+# views/user_routes.py — every route is public
+@user_bp.route('/users/<int:user_id>', methods=['DELETE'])
+def delete_user(user_id):
+    return jsonify(controller.delete(user_id)), 200
+```
+
+### After (Python — PyJWT + `@auth_required` decorator)
+
+```python
+# config/settings.py — token secret & lifetime come from the environment
+JWT_SECRET = os.environ.get('JWT_SECRET', SECRET_KEY)
+JWT_ALGORITHM = 'HS256'
+JWT_EXP_MINUTES = int(os.environ.get('JWT_EXP_MINUTES', 60))
+```
+
+```python
+# utils/jwt_service.py — single source of truth for signing/verifying
+import jwt
+from datetime import datetime, timedelta, timezone
+from config.settings import JWT_SECRET, JWT_ALGORITHM, JWT_EXP_MINUTES
+
+def generate_token(user):
+    now = datetime.now(timezone.utc)
+    payload = {
+        'sub': str(user.id),
+        'role': user.role,
+        'iat': now,
+        'exp': now + timedelta(minutes=JWT_EXP_MINUTES),
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+def decode_token(token):
+    # raises jwt.ExpiredSignatureError / jwt.InvalidTokenError on bad tokens
+    return jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+```
+
+```python
+# middlewares/auth.py — verify the token and expose the caller
+from functools import wraps
+from flask import request, g
+import jwt
+from middlewares.error_handler import AppError
+from utils.jwt_service import decode_token
+
+def auth_required(roles=None):
+    def decorator(fn):
+        @wraps(fn)
+        def wrapper(*args, **kwargs):
+            header = request.headers.get('Authorization', '')
+            if not header.startswith('Bearer '):
+                raise AppError('Authorization token required', 401)
+            token = header.split(' ', 1)[1].strip()
+            try:
+                payload = decode_token(token)
+            except jwt.ExpiredSignatureError:
+                raise AppError('Token expired', 401)
+            except jwt.InvalidTokenError:
+                raise AppError('Invalid token', 401)
+            g.user_id = int(payload['sub'])
+            g.user_role = payload.get('role')
+            if roles and g.user_role not in roles:
+                raise AppError('Insufficient permissions', 403)
+            return fn(*args, **kwargs)
+        return wrapper
+    return decorator
+```
+
+```python
+# controllers/user_controller.py — issue a real signed token
+from utils.jwt_service import generate_token
+
+def login(self, data):
+    user = User.query.filter_by(email=data.get('email')).first()
+    if not user or not user.check_password(data.get('password')):
+        raise AppError('Invalid credentials', 401)
+    if not user.active:
+        raise AppError('User is inactive', 403)
+    return {
+        'message': 'Login successful',
+        'user': user.to_dict(),
+        'token': generate_token(user),   # <-- signed, expiring, verifiable
+    }
+```
+
+```python
+# views/user_routes.py — protect mutating / data-exposing routes
+from middlewares.auth import auth_required
+
+@user_bp.route('/users/<int:user_id>', methods=['DELETE'])
+@auth_required(roles=['admin'])
+def delete_user(user_id):
+    return jsonify(controller.delete(user_id)), 200
+```
+
+> **Alternative (batteries-included): `flask-jwt-extended`.** Configure `JWTManager(app)` with `JWT_SECRET_KEY` from the environment, issue tokens with `create_access_token(identity=user.id, additional_claims={'role': user.role})`, protect routes with `@jwt_required()`, and read the caller with `get_jwt_identity()`. Prefer this when you want refresh tokens, blocklists, or built-in expiry handling; prefer plain **PyJWT** (above) when you want minimal dependencies and an explicit decorator. Either way, **all three parts (issue → verify → protect) are mandatory.** Add `PyJWT` (or `Flask-JWT-Extended`) to `requirements.txt`.
+
+### Before (Node.js)
+```javascript
+// Fake token, never verified
+app.post('/api/login', (req, res) => {
+    // ...validate credentials...
+    res.json({ token: 'fake-jwt-token-' + user.id });
+});
+```
+
+### After (Node.js — jsonwebtoken + middleware)
+```javascript
+// src/config/settings.js
+module.exports = {
+    jwtSecret: process.env.JWT_SECRET,          // required — no hardcoded fallback in prod
+    jwtExpiresIn: process.env.JWT_EXPIRES_IN || '1h',
+};
+
+// src/utils/jwtService.js
+const jwt = require('jsonwebtoken');
+const { jwtSecret, jwtExpiresIn } = require('../config/settings');
+exports.generateToken = (user) =>
+    jwt.sign({ sub: user.id, role: user.role }, jwtSecret, { expiresIn: jwtExpiresIn });
+
+// src/middlewares/auth.js
+function authRequired(roles = []) {
+    return (req, res, next) => {
+        const header = req.headers.authorization || '';
+        if (!header.startsWith('Bearer ')) return next({ status: 401, message: 'Token required' });
+        try {
+            const payload = jwt.verify(header.slice(7), jwtSecret);
+            req.user = payload;
+            if (roles.length && !roles.includes(payload.role))
+                return next({ status: 403, message: 'Insufficient permissions' });
+            next();
+        } catch (e) {
+            next({ status: 401, message: 'Invalid or expired token' });
+        }
+    };
+}
+
+// route — protected
+router.delete('/users/:id', authRequired(['admin']), async (req, res, next) => { ... });
+```
+
+---
+
 ## Refactoring Execution Checklist
 
 When executing Phase 3, apply these patterns in this order:
@@ -553,12 +718,15 @@ When executing Phase 3, apply these patterns in this order:
 2. **Create model layer** — Split God Class into domain models (Pattern 4)
 3. **Fix SQL injection** — Parameterize all queries (Pattern 2)
 4. **Fix password hashing** — Replace insecure hashing (Pattern 3)
-5. **Create controller layer** — Extract business logic from routes (Pattern 8)
-6. **Create route/view layer** — Thin routes that delegate to controllers
-7. **Fix N+1 queries** — Replace loops with JOINs (Pattern 6)
-8. **Add error handling middleware** — Centralized error handling (Pattern 7)
-9. **Fix data exposure** — Remove sensitive data from responses (Pattern 9)
-10. **Replace print logging** — Use proper logging (Pattern 10)
-11. **Refactor callbacks** — Convert to async/await for Node.js (Pattern 5)
-12. **Create composition root** — Wire everything in app.py/app.js
-13. **Validate** — Start app, test all endpoints, verify no regressions
+5. **Implement real authentication** — Replace fake tokens with signed JWT: issue → verify → protect (Pattern 11)
+6. **Create controller layer** — Extract business logic from routes (Pattern 8)
+7. **Create route/view layer** — Thin routes that delegate to controllers
+8. **Fix N+1 queries** — Replace loops with JOINs (Pattern 6)
+9. **Add error handling middleware** — Centralized error handling (Pattern 7)
+10. **Fix data exposure** — Remove sensitive data from responses (Pattern 9)
+11. **Replace print logging** — Use proper logging (Pattern 10)
+12. **Refactor callbacks** — Convert to async/await for Node.js (Pattern 5)
+13. **Create composition root** — Wire everything in app.py/app.js
+14. **Validate** — Start app, test all endpoints, confirm every CRITICAL/HIGH finding is resolved, verify no regressions
+
+> **Coverage rule:** a pattern being *listed* here is not the goal — *resolving every CRITICAL and HIGH finding from the Phase 2 report* is. Before declaring Phase 3 complete, map each CRITICAL/HIGH finding to the concrete change that fixes it (see SKILL.md Phase 3, step 3). A finding with no corresponding code change is an incomplete refactor, not a deferred one.
